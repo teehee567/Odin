@@ -21,61 +21,137 @@ object AbilityTimers : Module(
     name = "Ability Timers",
     desc = "Provides timers for Wither Impact, Tactical Insertion, and Enrage."
 ) {
-    private val witherHud by HudSetting("Wither Impact Hud", 10f, 10f, 1f, true) {
-        if (witherImpactTicks <= 0 && (hideWhenDone || !LocationUtils.isInSkyblock) && !it) return@HudSetting 0f to 0f
-        val width = if (compact) 6f else 65f
-        RenderUtils.drawText(witherImpactText, width / 2f, 0f, 1f, Colors.WHITE, shadow = true, center = true)
-        width to 12f
+    private interface AbilityTimer {
+        fun handleSoundEffect(packet: S29PacketSoundEffect) {}
+        fun update() {}
+        fun reset() {}
     }
-    private val compact: Boolean by BooleanSetting("Compact Mode", true, desc = "Compacts the Hud to just one character wide.").withDependency { witherHud.enabled }
-    private val hideWhenDone: Boolean by BooleanSetting("Hide When Ready", true, desc = "Hides the hud when the cooldown is over.").withDependency { witherHud.enabled }
-
-    private val tacHud by HudSetting("Tactical Insertion Hud", 10f, 10f, 1f, true) {
-        if (tacTimer == 0 && !it) return@HudSetting 0f to 0f
-        mcTextAndWidth("§6Tac: ${tacTimer.color(40, 20)}${(tacTimer / 20f).toFixed()}s", 1f, 1f, 1f, color = Colors.WHITE, center = false) + 2f to 12f
-    }
-
-    private val enrageHud by HudSetting("Enrage Hud", 10f, 10f, 1f, true) {
-        if (enrageTimer == 0 && !it) return@HudSetting 0f to 0f
-        mcTextAndWidth("§4Enrage: ${enrageTimer.color(80, 40)}${(enrageTimer / 20f).toFixed()}s", 0f, 0f, 1f, Colors.WHITE, center = false) + 2f to 12f
-    }
-
-    private var witherImpactTicks: Int = -1
-    private var enrageTimer = 0
-    private var tacTimer = 0
 
     init {
+        // Core
         onPacket<S29PacketSoundEffect> {
-            when {
-                it.soundName == "mob.zombie.remedy" && it.pitch == 0.6984127f && it.volume == 1f && witherHud.enabled && witherImpactTicks != -1 -> witherImpactTicks = 100
-                it.soundName == "fire.ignite" && it.pitch == 0.74603176f && it.volume == 1f && isHolding("TACTICAL_INSERTION") && tacHud.enabled -> tacTimer = 60
-                it.soundName == "mob.zombie.remedy" && it.pitch == 1.0f && it.volume == 0.5f && mc.thePlayer?.getCurrentArmor(0)?.skyblockID == "REAPER_BOOTS" &&
-                        mc.thePlayer?.getCurrentArmor(1)?.skyblockID == "REAPER_LEGGINGS" && mc.thePlayer?.getCurrentArmor(2)?.skyblockID == "REAPER_CHESTPLATE"
-                        && enrageHud.enabled -> enrageTimer = 120
-            }
-        }
-
-        onPacket<C08PacketPlayerBlockPlacement> {
-            if (mc.thePlayer?.heldItem?.skyblockID?.equalsOneOf("ASTRAEA", "HYPERION", "VALKYRIE", "SCYLLA", "NECRON_BLADE") == false || witherImpactTicks != -1) return@onPacket
-            witherImpactTicks = 0
+            WitherImpactTimer.handleSoundEffect(it)
+            TacticalInsertionTimer.handleSoundEffect(it)
+            EnrageTimer.handleSoundEffect(it)
         }
 
         onPacket<S32PacketConfirmTransaction> {
-            if (witherImpactTicks > 0 && witherHud.enabled) witherImpactTicks--
-            if (enrageTimer > 0  && enrageHud.enabled) enrageTimer--
-            if (tacTimer > 0 && tacHud.enabled) tacTimer--
+            WitherImpactTimer.update()
+            TacticalInsertionTimer.update()
+            EnrageTimer.update()
         }
 
         onWorldLoad {
-            witherImpactTicks = -1
-            enrageTimer = 0
-            tacTimer = 0
+            WitherImpactTimer.reset()
+            TacticalInsertionTimer.reset()
+            EnrageTimer.reset()
+        }
+
+        // Other
+        onPacket<C08PacketPlayerBlockPlacement> {
+            WitherImpactTimer.handleBlockPlacement(it)
         }
     }
 
-    private inline val witherImpactText: String get() =
-        if (compact) if (witherImpactTicks <= 0) "§aR" else "${witherImpactTicks.color(61, 21)}${ceil(witherImpactTicks / 20f).toInt()}"
-        else if (witherImpactTicks <= 0) "§6Shield: §aReady" else "§6Shield: ${witherImpactTicks.color(61, 21)}${(witherImpactTicks / 20f).toFixed()}s"
+    private object WitherImpactTimer : AbilityTimer {
+        var ticks: Int = -1
+
+        val hud by HudSetting("Wither Impact Hud", 10f, 10f, 1f, true) {
+            if (ticks <= 0 && (hideWhenDone || !LocationUtils.isInSkyblock) && !it) return@HudSetting 0f to 0f
+            val width = if (compact) 6f else 65f
+            RenderUtils.drawText(text, width / 2f, 0f, 1f, Colors.WHITE, shadow = true, center = true)
+            width to 12f
+        }
+
+        val compact: Boolean by BooleanSetting("Compact Mode", true, desc = "Compacts the Hud to just one character wide.").withDependency { witherHud.enabled }
+        val hideWhenDone: Boolean by BooleanSetting("Hide When Ready", true, desc = "Hides the hud when the cooldown is over.").withDependency { witherHud.enabled }
+
+        inline val text: String get() =
+        if (compact) if (ticks <= 0) "§aR" else "${ticks.color(61, 21)}${ceil(ticks / 20f).toInt()}"
+        else if (ticks <= 0) "§6Shield: §aReady" else "§6Shield: ${ticks.color(61, 21)}${(ticks / 20f).toFixed()}s"
+
+        override fun handleSoundEffect(packet: S29PacketSoundEffect) {
+            if (packet.soundName == "mob.zombie.remedy" && 
+                packet.pitch == 0.6984127f && 
+                packet.volume == 1f && 
+                hud.enabled && 
+                ticks != -1
+            ) {
+                ticks = 100
+            }
+        }
+
+        override fun update() {
+            if (ticks > 0 && hud.enabled) ticks--
+        }
+
+        override fun reset() {
+            ticks = -1
+        }
+
+        fun handleBlockPlacement(packet: C08PacketPlayerBlockPlacement) {
+            if (mc.thePlayer?.heldItem?.skyblockID?.equalsOneOf("ASTRAEA", "HYPERION", "VALKYRIE", "SCYLLA", "NECRON_BLADE") == false || ticks != -1) return
+            ticks = 0
+        }
+    }
+
+    private object TacticalInsertionTimer : AbilityTimer {
+        var timer: Int = 0
+
+        val hud by HudSetting("Tactical Insertion Hud", 10f, 10f, 1f, true) {
+            if (tacTimer == 0 && !it) return@HudSetting 0f to 0f
+            mcTextAndWidth("§6Tac: ${timer.color(40, 20)}${(timer / 20f).toFixed()}s", 1f, 1f, 1f, color = Colors.WHITE, center = false) + 2f to 12f
+        }
+
+        override fun handleSoundEffect(packet: S29PacketSoundEffect) {
+            if (packet.soundName == "fire.ignite" && 
+                packet.pitch == 0.74603176f && 
+                packet.volume == 1f && 
+                isHolding("TACTICAL_INSERTION") && 
+                hud.enabled
+            ) {
+                timer = 60
+            }
+        }
+
+        override fun update() {
+            if (timer > 0 && hud.enabled) timer--
+        }
+
+        override fun reset() {
+            timer = 0
+        }
+    }
+
+    private object EnrageTimer : AbilityTimer {
+        var timer: Int = 0
+
+        val enrageHud by HudSetting("Enrage Hud", 10f, 10f, 1f, true) {
+            if (timer == 0 && !it) return@HudSetting 0f to 0f
+            mcTextAndWidth("§4Enrage: ${timer.color(80, 40)}${(timer / 20f).toFixed()}s", 0f, 0f, 1f, Colors.WHITE, center = false) + 2f to 12f
+        }
+
+        override fun handleSoundEffect(packet: S29PacketSoundEffect) {
+            if (packet.soundName == "mob.zombie.remedy" && 
+                packet.pitch == 1.0f && 
+                packet.volume == 0.5f && 
+                mc.thePlayer?.getCurrentArmor(0)?.skyblockID == "REAPER_BOOTS" &&
+                mc.thePlayer?.getCurrentArmor(1)?.skyblockID == "REAPER_LEGGINGS" && 
+                mc.thePlayer?.getCurrentArmor(2)?.skyblockID == "REAPER_CHESTPLATE" && 
+                hud.enabled
+            ) {
+                timer = 120
+            }
+        }
+
+        override fun update() {
+            if (timer > 0 && hud.enabled) timer--
+        }
+
+        override fun reset() {
+            timer = 0
+        }
+    }
 
     private fun Int.color(compareFirst: Int, compareSecond: Int): String {
         return when {
